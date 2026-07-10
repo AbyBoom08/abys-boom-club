@@ -1,0 +1,272 @@
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Work+Sans:wght@400;500;600;700&display=swap');
+
+  :root{
+    --ink:#1c0705;
+    --char:#2a0d09;
+    --ember:#ff4d1c;
+    --ember-dim:#c1121f;
+    --gold:#ffcd3c;
+    --gold-soft:#f3b64a;
+    --cream:#f7e9d7;
+    --cream-dim:#d8c3a5;
+    --latex:#0e0808;
+  }
+
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    background:
+      radial-gradient(ellipse at 50% -10%, #4a1006 0%, var(--ink) 55%, #100302 100%);
+    color:var(--cream);
+    font-family:'Work Sans', sans-serif;
+    overflow-x:hidden;
+  }
+
+  /* ambient sunburst behind everything */
+  .burst{
+    position:fixed;
+    top:50%; left:50%;
+    width:2200px; height:2200px;
+    transform:translate(-50%,-50%);
+    background:
+      repeating-conic-gradient(from 0deg,
+        rgba(255,77,28,0.05) 0deg 6deg,
+        transparent 6deg 12deg);
+    z-index:0;
+    pointer-events:none;
+    animation:spin 90s linear infinite;
+  }
+  @keyframes spin{to{transform:translate(-50%,-50%) rotate(360deg);}}
+
+  header, main, footer{position:relative; z-index:2;}
+
+  /* ---------- NAV ---------- */
+  nav{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:28px 6vw;
+    border-bottom:1px solid rgba(255,205,60,0.15);
+  }
+  .brand{
+    display:flex; align-items:center; gap:14px;
+    letter-spacing:0.08em;
+  }
+  .brand img{
+    height:52px; width:52px; object-fit:cover; object-position:top center;
+    border-radius:50%;
+    border:2px solid var(--gold);
+    box-shadow:0 0 18px rgba(255,205,60,0.35);
+  }
+  .brand span{
+    font-family:'Bebas Neue', sans-serif;
+    font-size:1.5rem;
+    color:var(--gold);
+  }
+
+  /* ---------- HERO ---------- */
+  .hero{
+    display:flex; flex-direction:column; align-items:center; text-align:center;
+    padding:7vh 6vw 8vh;
+  }
+  .eyebrow{
+    font-family:'Cormorant Garamond'; font-style:italic; font-weight:500;
+    color:var(--ember);
+    letter-spacing:0.12em;
+    margin-bottom:22px;
+    font-size:1.15rem;
+  }
+  .hero-frame{
+    position:relative;
+    width:min(360px, 62vw);
+    margin-bottom:34px;
+  }
+  .hero-frame .rays{
+    position:absolute; inset:-40px;
+    background:
+      conic-gradient(from 0deg,
+        var(--gold) 0deg 10deg, transparent 10deg 20deg,
+        var(--ember) 20deg 30deg, transparent 30deg 40deg,
+        var(--gold) 40deg 50deg, transparent 50deg 60deg,
+        var(--ember) 60deg 70deg, transparent 70deg 80deg,
+        var(--gold) 80deg 90deg, transparent 90deg 100deg,
+        var(--ember) 100deg 110deg, transparent 110deg 120deg,
+        var(--gold) 120deg 130deg, transparent 130deg 140deg,
+        var(--ember) 140deg 150deg, transparent 150deg 160deg,
+        var(--gold) 160deg 170deg, transparent 170deg 180deg,
+        var(--ember) 180deg 190deg, transparent 190deg 200deg,
+        var(--gold) 200deg 210deg, transparent 210deg 220deg,
+        var(--ember) 220deg 230deg, transparent 230deg 240deg,
+        var(--gold) 240deg 250deg, transparent 250deg 260deg,
+        var(--ember) 260deg 270deg, transparent 270deg 280deg,
+        var(--gold) 280deg 290deg, transparent 290deg 300deg,
+        var(--ember) 300deg 310deg, transparent 310deg 320deg,
+        var(--gold) 320deg 330deg, transparent 330deg 340deg,
+        var(--ember) 340deg 350deg, transparent 350deg 360deg
+      );
+    border-radius:50%;
+    opacity:0.5;
+    filter:blur(1px);
+    animation:spin 60s linear infinite reverse;
+  }
+  .hero-frame img{
+    position:relative;
+    width:100%;
+    display:block;
+    border-radius:14px;
+    box-shadow:0 20px 60px rgba(0,0,0,0.6), 0 0 0 3px var(--ink), 0 0 0 5px var(--gold);
+  }
+
+  h1{
+    font-family:'Bebas Neue', sans-serif;
+    font-size:clamp(2.6rem, 7vw, 5.2rem);
+    line-height:0.95;
+    letter-spacing:0.01em;
+    color:var(--cream);
+    max-width:14ch;
+  }
+  h1 em{
+    font-style:normal;
+    color:var(--ember);
+    text-shadow:0 0 30px rgba(255,77,28,0.5);
+  }
+  .sub{
+    font-family:'Cormorant Garamond'; font-weight:500;
+    font-size:1.35rem;
+    color:var(--cream-dim);
+    max-width:38ch;
+    margin:22px 0 40px;
+  }
+
+  .price-pill{
+    display:inline-flex; align-items:baseline; gap:6px;
+    background:rgba(255,205,60,0.08);
+    border:1px solid rgba(255,205,60,0.35);
+    padding:10px 24px;
+    border-radius:999px;
+    margin-bottom:26px;
+  }
+  .price-pill .amount{font-family:'Bebas Neue'; font-size:1.8rem; color:var(--gold);}
+  .price-pill .period{font-size:0.85rem; color:var(--cream-dim);}
+
+  .btn-main{
+    font-family:'Work Sans'; font-weight:700; font-size:1.05rem;
+    letter-spacing:0.03em;
+    color:var(--ink);
+    background:linear-gradient(135deg, var(--gold) 0%, var(--ember) 100%);
+    border:none;
+    padding:20px 54px;
+    border-radius:999px;
+    cursor:pointer;
+    box-shadow:0 12px 40px rgba(255,77,28,0.35);
+    transition:transform .2s ease, box-shadow .2s ease;
+  }
+  .btn-main:hover{transform:translateY(-3px) scale(1.02); box-shadow:0 16px 50px rgba(255,77,28,0.5);}
+  .btn-note{
+    margin-top:14px;
+    font-size:0.8rem;
+    color:var(--cream-dim);
+    letter-spacing:0.04em;
+  }
+
+  /* ---------- DIVIDER (tail motif) ---------- */
+  .tail-divider{
+    display:flex; align-items:center; justify-content:center;
+    gap:0; padding:10px 6vw 0;
+  }
+  .tail-divider svg{width:min(700px,90vw); height:40px;}
+
+  /* ---------- BENEFITS ---------- */
+  .benefits{
+    max-width:480px;
+    margin:8vh auto;
+    padding:0 6vw;
+    display:flex;
+    justify-content:center;
+  }
+  .benefit{
+    background:rgba(255,255,255,0.03);
+    border:1px solid rgba(255,205,60,0.15);
+    border-radius:16px;
+    padding:34px 30px;
+    text-align:center;
+  }
+  .benefit .icon{
+    width:36px; height:36px;
+    margin:0 auto 16px;
+    color:var(--ember);
+  }
+  .benefit h3{
+    font-family:'Bebas Neue'; font-size:1.4rem; letter-spacing:0.03em;
+    color:var(--gold);
+    margin-bottom:8px;
+  }
+  .benefit p{
+    font-size:0.92rem; color:var(--cream-dim); line-height:1.5;
+  }
+
+  /* ---------- HOW IT WORKS ---------- */
+  .how{
+    max-width:900px;
+    margin:9vh auto 0;
+    padding:0 6vw;
+  }
+  .how-inner{
+    display:flex; align-items:flex-start; justify-content:center;
+    gap:18px;
+    flex-wrap:wrap;
+  }
+  .how-step{
+    flex:1 1 200px;
+    text-align:center;
+    max-width:220px;
+  }
+  .how-num{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:38px; height:38px;
+    border-radius:50%;
+    border:1px solid var(--gold);
+    color:var(--gold);
+    font-family:'Bebas Neue'; font-size:1.1rem;
+    margin-bottom:14px;
+  }
+  .how-step h4{
+    font-family:'Bebas Neue'; font-size:1.15rem; letter-spacing:0.02em;
+    color:var(--cream); margin-bottom:6px;
+  }
+  .how-step p{font-size:0.85rem; color:var(--cream-dim); line-height:1.5;}
+  .how-arrow{
+    color:var(--ember);
+    font-size:1.4rem;
+    padding-top:8px;
+  }
+  @media(max-width:640px){ .how-arrow{ transform:rotate(90deg); } }
+
+  /* ---------- QUOTE ---------- */
+  .quote{
+    max-width:640px;
+    margin:10vh auto;
+    text-align:center;
+    padding:0 6vw;
+  }
+  .quote svg{width:34px; height:34px; color:var(--ember); margin-bottom:18px;}
+  .quote p{
+    font-family:'Cormorant Garamond'; font-style:italic; font-weight:500;
+    font-size:1.6rem; line-height:1.5;
+    color:var(--cream);
+  }
+  .quote span{
+    display:block; margin-top:16px;
+    font-family:'Work Sans'; font-size:0.8rem; letter-spacing:0.08em;
+    color:var(--gold-soft); text-transform:uppercase;
+  }
+
+  footer{
+    border-top:1px solid rgba(255,205,60,0.15);
+    padding:26px 6vw;
+    display:flex; align-items:center; justify-content:space-between;
+    font-size:0.75rem; color:var(--cream-dim); letter-spacing:0.04em;
+  }
+  footer a{color:var(--gold-soft); text-decoration:none;}
+
+  @media(max-width:720px){
+    .how-arrow{ transform:rotate(90deg); }
+  }
