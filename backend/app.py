@@ -103,6 +103,41 @@ def update_expiration_from_subscription(
     return parsed
 
 
+def paypal_resource_not_found(
+    error: requests.RequestException,
+) -> bool:
+    """Detecta IDs inexistentes o de otro entorno de PayPal."""
+
+    response = error.response
+
+    if response is None or response.status_code != 404:
+        return False
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return "RESOURCE_NOT_FOUND" in response.text
+
+    return (
+        payload.get("name") == "RESOURCE_NOT_FOUND"
+        or any(
+            detail.get("issue") == "INVALID_RESOURCE_ID"
+            for detail in payload.get("details", [])
+            if isinstance(detail, dict)
+        )
+    )
+
+
+def clear_subscription_state(
+    user: models.User,
+) -> None:
+    """Limpia los datos de una suscripción inválida."""
+
+    user.paypal_subscription_id = None
+    user.subscription_active = False
+    user.subscription_expires_at = None
+
+
 @app.get("/")
 async def home():
     return {
@@ -325,6 +360,8 @@ def create_subscription(
             ),
         ) from error
 
+    clear_subscription_state(user)
+
     user.paypal_subscription_id = (
         paypal_result["subscription_id"]
     )
@@ -380,6 +417,21 @@ def check_paypal_subscription(
         )
 
     except requests.RequestException as error:
+        if paypal_resource_not_found(error):
+            clear_subscription_state(user)
+            db.commit()
+            db.refresh(user)
+
+            return {
+                "subscription_active": False,
+                "paypal_status": None,
+                "subscription_expires_at": None,
+                "message": (
+                    "La suscripción anterior no existe en el entorno "
+                    "actual de PayPal. Se limpió el registro antiguo."
+                ),
+            }
+
         paypal_response = ""
 
         if error.response is not None:
@@ -468,6 +520,19 @@ def cancel_subscription(
         )
 
     except requests.RequestException as error:
+        if paypal_resource_not_found(error):
+            clear_subscription_state(user)
+            db.commit()
+
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "La suscripción guardada pertenecía a otro entorno "
+                    "de PayPal o ya no existe. El registro antiguo fue "
+                    "eliminado; ahora puedes comprar una suscripción nueva."
+                ),
+            ) from error
+
         paypal_response = ""
 
         if error.response is not None:
@@ -744,51 +809,4 @@ def process_expired_subscriptions(
             "Las suscripciones vencidas fueron "
             "marcadas como inactivas."
         ),
-    }
-
-@app.post("/admin/reset-subscription/{telegram_id}")
-def reset_subscription_for_testing(
-    telegram_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-):
-    """
-    Borra temporalmente los datos de suscripción de un usuario.
-    Solo debe usarse durante las pruebas de producción.
-    """
-
-    expected_key = os.getenv("ADMIN_RESET_KEY")
-    provided_key = request.headers.get("X-Admin-Key")
-
-    if not expected_key or provided_key != expected_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No autorizado.",
-        )
-
-    user = db.scalar(
-        select(models.User).where(
-            models.User.telegram_id == telegram_id
-        )
-    )
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado.",
-        )
-
-    user.paypal_subscription_id = None
-    user.subscription_active = False
-    user.subscription_expires_at = None
-
-    db.commit()
-    db.refresh(user)
-
-    return {
-        "status": "reset",
-        "telegram_id": user.telegram_id,
-        "paypal_subscription_id": user.paypal_subscription_id,
-        "subscription_active": user.subscription_active,
-        "subscription_expires_at": user.subscription_expires_at,
     }
