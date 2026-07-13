@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-
+import os
 import requests
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from sqlalchemy import select, text
@@ -744,4 +744,51 @@ def process_expired_subscriptions(
             "Las suscripciones vencidas fueron "
             "marcadas como inactivas."
         ),
+    }
+
+@app.post("/admin/reset-subscription/{telegram_id}")
+def reset_subscription_for_testing(
+    telegram_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Borra temporalmente los datos de suscripción de un usuario.
+    Solo debe usarse durante las pruebas de producción.
+    """
+
+    expected_key = os.getenv("ADMIN_RESET_KEY")
+    provided_key = request.headers.get("X-Admin-Key")
+
+    if not expected_key or provided_key != expected_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No autorizado.",
+        )
+
+    user = db.scalar(
+        select(models.User).where(
+            models.User.telegram_id == telegram_id
+        )
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado.",
+        )
+
+    user.paypal_subscription_id = None
+    user.subscription_active = False
+    user.subscription_expires_at = None
+
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "status": "reset",
+        "telegram_id": user.telegram_id,
+        "paypal_subscription_id": user.paypal_subscription_id,
+        "subscription_active": user.subscription_active,
+        "subscription_expires_at": user.subscription_expires_at,
     }
