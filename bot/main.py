@@ -17,7 +17,7 @@ from telegram.ext import (
     filters,
 )
 
-load_dotenv()
+load_dotenv(override=True)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -50,6 +50,8 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+BOT_CODE_VERSION = "2026-07-13-final-buy-fix"
 
 
 def main_menu() -> InlineKeyboardMarkup:
@@ -409,7 +411,8 @@ async def start(
     await update.message.reply_text(
         f"Hola, {user.first_name} 👋\n\n"
         "Bienvenido a Abys Boom Club.\n\n"
-        "Selecciona una de las siguientes opciones:",
+        "Selecciona una de las siguientes opciones:\n\n"
+        f"Versión: {BOT_CODE_VERSION}",
         reply_markup=main_menu(),
     )
 
@@ -474,6 +477,13 @@ async def handle_button(
             user_data = await asyncio.to_thread(
                 get_user,
                 query.from_user.id,
+            )
+
+            logger.info(
+                "BUY_ACCESS version=%s telegram_id=%s user_data=%r",
+                BOT_CODE_VERSION,
+                query.from_user.id,
+                user_data,
             )
 
             if user_data and subscription_is_current(user_data):
@@ -988,7 +998,10 @@ def run_bot() -> None:
         )
     )
 
-    print("Bot iniciado. Presiona Ctrl+C para detenerlo.")
+    print(f"Bot iniciado. Versión: {BOT_CODE_VERSION}")
+    print(f"Archivo ejecutado: {os.path.abspath(__file__)}")
+    print(f"Backend usado: {BACKEND_URL}")
+    print("Presiona Ctrl+C para detenerlo.")
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES
