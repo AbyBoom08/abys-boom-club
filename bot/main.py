@@ -483,25 +483,6 @@ async def handle_button(
                 )
                 return
 
-            paypal_data = await asyncio.to_thread(
-                check_user_subscription,
-                query.from_user.id,
-            )
-
-            if paypal_data.get("subscription_active"):
-                updated_user = await asyncio.to_thread(
-                    get_user,
-                    query.from_user.id,
-                )
-
-                await waiting_message.edit_text(
-                    active_membership_message(
-                        updated_user or paypal_data
-                    ),
-                    reply_markup=request_access_keyboard(),
-                )
-                return
-
             await waiting_message.edit_text(
                 "⏳ Preparando tu enlace personal de PayPal..."
             )
