@@ -10,7 +10,7 @@ from time import monotonic
 import requests
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from sqlalchemy import select, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -871,9 +871,22 @@ async def paypal_webhook(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """Recibe y procesa los eventos enviados por PayPal."""
+    """
+    Recibe los eventos enviados por PayPal, verifica su firma
+    y evita procesar el mismo webhook más de una vez.
+    """
 
-    event = await request.json()
+    try:
+        event = await request.json()
+    except ValueError as error:
+        logger.warning(
+            "Webhook rechazado: JSON inválido."
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El contenido del webhook no es un JSON válido.",
+        ) from error
 
     try:
         signature_valid = verify_paypal_webhook(
@@ -882,51 +895,129 @@ async def paypal_webhook(
         )
 
     except (RuntimeError, requests.RequestException) as error:
+        logger.exception(
+            "No se pudo verificar la firma del webhook."
+        )
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"No se pudo verificar el webhook: {error}",
         ) from error
 
     if not signature_valid:
+        logger.warning(
+            "Webhook rechazado por firma inválida event_id=%s",
+            event.get("id"),
+        )
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Firma de PayPal inválida.",
         )
 
+    event_id = event.get("id")
     event_type = event.get("event_type", "")
-resource = event.get("resource", {})
+    resource = event.get("resource", {})
 
-logger.info(
-    "Webhook recibido event_id=%s event_type=%s",
-    event.get("id"),
-    event_type,
-)
-
-subscription_id = resource.get("id")
-
-if event_type == "PAYMENT.SALE.COMPLETED":
-    subscription_id = resource.get(
-        "billing_agreement_id"
-    )
-
-if not subscription_id:
-    logger.warning(
-        "Webhook ignorado event_id=%s event_type=%s: "
-        "no contiene subscription_id",
-        event.get("id"),
+    logger.info(
+        "Webhook recibido event_id=%s event_type=%s",
+        event_id,
         event_type,
     )
 
-    return {
-        "status": "ignored",
-        "reason": "El evento no contiene una suscripción.",
-    }
+    if not event_id:
+        logger.warning(
+            "Webhook rechazado porque no contiene event_id."
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El webhook no contiene un event_id.",
+        )
+
+    if not event_type:
+        logger.warning(
+            "Webhook rechazado porque no contiene event_type "
+            "event_id=%s",
+            event_id,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El webhook no contiene un event_type.",
+        )
+
+    # Registramos el evento antes de procesarlo.
+    # event_id es único en PostgreSQL.
+    webhook_record = models.PayPalWebhookEvent(
+        event_id=event_id,
+        event_type=event_type,
+    )
+
+    db.add(webhook_record)
+
+    try:
+        # Envía el INSERT sin confirmar todavía.
+        # Esto permite detectar eventos duplicados.
+        db.flush()
+
+    except IntegrityError:
+        db.rollback()
+
+        logger.warning(
+            "Webhook duplicado ignorado event_id=%s event_type=%s",
+            event_id,
+            event_type,
+        )
+
+        return {
+            "status": "already_processed",
+            "event_id": event_id,
+            "event_type": event_type,
+            "message": "Este webhook ya fue recibido anteriormente.",
+        }
+
+    subscription_id = resource.get("id")
+
+    if event_type == "PAYMENT.SALE.COMPLETED":
+        subscription_id = resource.get(
+            "billing_agreement_id"
+        )
+
+    if not subscription_id:
+        logger.warning(
+            "Webhook ignorado event_id=%s event_type=%s: "
+            "no contiene una suscripción",
+            event_id,
+            event_type,
+        )
+
+        # Guarda el evento como recibido para que PayPal
+        # no consiga procesarlo repetidamente.
+        db.commit()
+
+        return {
+            "status": "ignored",
+            "reason": "El evento no contiene una suscripción.",
+        }
+
     try:
         subscription = get_paypal_subscription(
             subscription_id
         )
 
     except requests.RequestException as error:
+        # El registro del evento no debe guardarse si ocurrió
+        # un fallo temporal. Así PayPal podrá reenviarlo.
+        db.rollback()
+
+        logger.exception(
+            "No se pudo consultar la suscripción del webhook "
+            "event_id=%s subscription_id=%s",
+            event_id,
+            subscription_id,
+        )
+
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=(
@@ -939,6 +1030,15 @@ if not subscription_id:
     paypal_status = subscription.get("status", "")
 
     if not custom_id:
+        logger.warning(
+            "Webhook ignorado: suscripción sin custom_id "
+            "event_id=%s subscription_id=%s",
+            event_id,
+            subscription_id,
+        )
+
+        db.commit()
+
         return {
             "status": "ignored",
             "reason": "La suscripción no contiene custom_id.",
@@ -946,7 +1046,17 @@ if not subscription_id:
 
     try:
         telegram_id = int(custom_id)
+
     except (TypeError, ValueError):
+        logger.warning(
+            "Webhook ignorado: custom_id inválido "
+            "event_id=%s custom_id=%r",
+            event_id,
+            custom_id,
+        )
+
+        db.commit()
+
         return {
             "status": "ignored",
             "reason": "custom_id no contiene un Telegram ID válido.",
@@ -959,9 +1069,47 @@ if not subscription_id:
     )
 
     if not user:
+        # No guardamos el evento todavía para poder corregir
+        # el usuario y volver a procesarlo si PayPal lo reintenta.
+        db.rollback()
+
+        logger.warning(
+            "Usuario no encontrado al procesar webhook "
+            "event_id=%s telegram_id=%s",
+            event_id,
+            telegram_id,
+        )
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Usuario de Telegram no encontrado.",
+        )
+
+    # Protección adicional:
+    # evita asociar al usuario una suscripción diferente
+    # de la que ya está guardada.
+    if (
+        user.paypal_subscription_id
+        and user.paypal_subscription_id != subscription_id
+    ):
+        db.rollback()
+
+        logger.error(
+            "Webhook rechazado por suscripción distinta "
+            "event_id=%s telegram_id=%s saved_subscription_id=%s "
+            "received_subscription_id=%s",
+            event_id,
+            telegram_id,
+            user.paypal_subscription_id,
+            subscription_id,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "La suscripción del webhook no coincide con "
+                "la suscripción guardada para este usuario."
+            ),
         )
 
     update_expiration_from_subscription(
@@ -983,9 +1131,11 @@ if not subscription_id:
     }
 
     if event_type == "BILLING.SUBSCRIPTION.CANCELLED":
-        # La cancelación detiene renovaciones, pero no elimina
-        # el tiempo que el cliente ya pagó.
-        user.subscription_active = user_has_remaining_access(user)
+        # Detiene futuras renovaciones, pero conserva
+        # el acceso durante el periodo que ya fue pagado.
+        user.subscription_active = user_has_remaining_access(
+            user
+        )
 
     elif event_type in immediately_inactive_events:
         user.subscription_active = False
@@ -995,22 +1145,44 @@ if not subscription_id:
         user.paypal_subscription_id = subscription_id
 
     elif paypal_status == "CANCELLED":
-        user.subscription_active = user_has_remaining_access(user)
+        user.subscription_active = user_has_remaining_access(
+            user
+        )
 
-    db.commit()
-    db.refresh(user)
-    
+    try:
+        # Confirma en una sola operación:
+        # 1. La actualización del usuario.
+        # 2. El registro del event_id.
+        db.commit()
+        db.refresh(user)
+
+    except SQLAlchemyError as error:
+        db.rollback()
+
+        logger.exception(
+            "Error guardando el resultado del webhook "
+            "event_id=%s telegram_id=%s",
+            event_id,
+            telegram_id,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No se pudo guardar el resultado del webhook.",
+        ) from error
+
     logger.info(
-    "Webhook procesado event_id=%s event_type=%s "
-    "telegram_id=%s subscription_active=%s",
-    event.get("id"),
-    event_type,
-    telegram_id,
-    user.subscription_active,
-)
+        "Webhook procesado event_id=%s event_type=%s "
+        "telegram_id=%s subscription_active=%s",
+        event_id,
+        event_type,
+        telegram_id,
+        user.subscription_active,
+    )
 
     return {
         "status": "processed",
+        "event_id": event_id,
         "event_type": event_type,
         "paypal_status": paypal_status,
         "telegram_id": telegram_id,
