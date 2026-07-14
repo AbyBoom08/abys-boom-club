@@ -20,6 +20,7 @@ from telegram.ext import (
 load_dotenv(override=True)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
 
 BACKEND_URL = os.getenv(
     "BACKEND_URL",
@@ -289,10 +290,18 @@ def cancel_user_subscription(telegram_id: int) -> dict:
 def process_expired_subscriptions() -> dict:
     """Pide al backend detectar y desactivar suscripciones vencidas."""
 
-    response = requests.post(
-        f"{BACKEND_URL}/subscriptions/process-expired",
-        timeout=30,
+ if not INTERNAL_API_KEY:
+    raise RuntimeError(
+        "INTERNAL_API_KEY no está configurada en el bot."
     )
+
+response = requests.post(
+    f"{BACKEND_URL}/subscriptions/process-expired",
+    headers={
+        "X-Internal-Key": INTERNAL_API_KEY,
+    },
+    timeout=30,
+)
 
     if response.status_code != 200:
         try:
