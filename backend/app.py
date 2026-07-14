@@ -312,7 +312,10 @@ def create_subscription(
     telegram_id: int,
     db: Session = Depends(get_db),
 ):
-    """Crea una suscripción para un usuario."""
+    """
+    Crea una suscripción para un usuario y evita que
+    tenga varias suscripciones activas o pendientes.
+    """
 
     user = db.scalar(
         select(models.User).where(
@@ -326,7 +329,12 @@ def create_subscription(
             detail="Usuario de Telegram no encontrado.",
         )
 
-    if user.subscription_active and user_has_remaining_access(user):
+    # Impide comprar nuevamente mientras todavía tenga
+    # acceso durante el periodo pagado.
+    if (
+        user.subscription_active
+        and user_has_remaining_access(user)
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
@@ -334,6 +342,96 @@ def create_subscription(
                 "No necesitas volver a pagar."
             ),
         )
+
+    # Comprueba si ya existe una suscripción pendiente
+    # o activa guardada para este usuario.
+    if user.paypal_subscription_id:
+        try:
+            existing_subscription = get_paypal_subscription(
+                user.paypal_subscription_id
+            )
+
+            existing_status = existing_subscription.get(
+                "status",
+                "",
+            )
+
+            if existing_status == "ACTIVE":
+                update_expiration_from_subscription(
+                    user,
+                    existing_subscription,
+                )
+
+                user.subscription_active = True
+                db.commit()
+                db.refresh(user)
+
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Ya tienes una suscripción activa. "
+                        "No necesitas crear otra."
+                    ),
+                )
+
+            if existing_status in {
+                "APPROVAL_PENDING",
+                "APPROVED",
+            }:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Ya tienes una suscripción pendiente "
+                        "de completar en PayPal. "
+                        "No puedes crear otra suscripción."
+                    ),
+                )
+
+            if existing_status == "SUSPENDED":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Tu suscripción está suspendida. "
+                        "No puedes crear otra mientras esa "
+                        "suscripción siga registrada."
+                    ),
+                )
+
+            # Si la suscripción terminó o fue cancelada,
+            # limpiamos el registro anterior.
+            if existing_status in {
+                "CANCELLED",
+                "EXPIRED",
+            }:
+                clear_subscription_state(user)
+                db.commit()
+                db.refresh(user)
+
+        except HTTPException:
+            raise
+
+        except requests.RequestException as error:
+            # Si el ID ya no existe en PayPal, se limpia
+            # para permitir crear una suscripción nueva.
+            if paypal_resource_not_found(error):
+                clear_subscription_state(user)
+                db.commit()
+                db.refresh(user)
+
+            else:
+                paypal_response = ""
+
+                if error.response is not None:
+                    paypal_response = error.response.text
+
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=(
+                        "No se pudo comprobar tu suscripción "
+                        "anterior en PayPal. "
+                        f"{paypal_response or str(error)}"
+                    ),
+                ) from error
 
     try:
         paypal_result = create_paypal_subscription(
