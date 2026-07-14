@@ -51,8 +51,34 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-BOT_CODE_VERSION = "2026-07-13-final-buy-fix"
+USER_BUTTON_COOLDOWNS: dict[int, float] = {}
+BUTTON_COOLDOWN_SECONDS = 5
+BUTTON_COOLDOWN_LOCK = asyncio.Lock()
 
+async def user_is_spamming(
+    telegram_id: int,
+) -> bool:
+    """
+    Evita que un usuario presione botones muchas veces seguidas.
+    """
+
+    current_time = asyncio.get_running_loop().time()
+
+    async with BUTTON_COOLDOWN_LOCK:
+        last_click_time = USER_BUTTON_COOLDOWNS.get(
+            telegram_id
+        )
+
+        if (
+            last_click_time is not None
+            and current_time - last_click_time
+            < BUTTON_COOLDOWN_SECONDS
+        ):
+            return True
+
+        USER_BUTTON_COOLDOWNS[telegram_id] = current_time
+
+    return False
 
 def main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -464,6 +490,13 @@ async def handle_button(
     query = update.callback_query
 
     if not query or not query.message:
+        return
+
+    if await user_is_spamming(query.from_user.id):
+        await query.answer(
+            "⏳ Espera unos segundos antes de volver a intentarlo.",
+            show_alert=True,
+        )
         return
 
     await query.answer()
