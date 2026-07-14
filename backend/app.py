@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from collections import defaultdict, deque
 import os
+import logging
 from threading import Lock
 from time import monotonic
 
@@ -32,6 +33,13 @@ app = FastAPI(
 )
 
 Base.metadata.create_all(bind=engine)
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+
+logger = logging.getLogger(__name__)
 
 RATE_LIMIT_REQUESTS: dict[str, deque] = defaultdict(deque)
 RATE_LIMIT_LOCK = Lock()
@@ -360,6 +368,7 @@ def create_subscription(
     Crea una suscripción para un usuario y evita que
     tenga varias suscripciones activas o pendientes.
     """
+
     enforce_rate_limit(
         key=f"create_subscription:{telegram_id}",
         max_requests=3,
@@ -378,12 +387,24 @@ def create_subscription(
             detail="Usuario de Telegram no encontrado.",
         )
 
+    # LOG: registra el intento de compra.
+    logger.info(
+        "Intento de crear suscripción telegram_id=%s",
+        telegram_id,
+    )
+
     # Impide comprar nuevamente mientras todavía tenga
     # acceso durante el periodo pagado.
     if (
         user.subscription_active
         and user_has_remaining_access(user)
     ):
+        logger.warning(
+            "Compra bloqueada: usuario ya tiene acceso "
+            "telegram_id=%s",
+            telegram_id,
+        )
+
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
@@ -415,6 +436,13 @@ def create_subscription(
                 db.commit()
                 db.refresh(user)
 
+                logger.warning(
+                    "Compra bloqueada: suscripción activa "
+                    "telegram_id=%s subscription_id=%s",
+                    telegram_id,
+                    user.paypal_subscription_id,
+                )
+
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=(
@@ -427,6 +455,14 @@ def create_subscription(
                 "APPROVAL_PENDING",
                 "APPROVED",
             }:
+                logger.warning(
+                    "Compra bloqueada: suscripción pendiente "
+                    "telegram_id=%s subscription_id=%s status=%s",
+                    telegram_id,
+                    user.paypal_subscription_id,
+                    existing_status,
+                )
+
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=(
@@ -437,6 +473,13 @@ def create_subscription(
                 )
 
             if existing_status == "SUSPENDED":
+                logger.warning(
+                    "Compra bloqueada: suscripción suspendida "
+                    "telegram_id=%s subscription_id=%s",
+                    telegram_id,
+                    user.paypal_subscription_id,
+                )
+
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=(
@@ -452,6 +495,14 @@ def create_subscription(
                 "CANCELLED",
                 "EXPIRED",
             }:
+                logger.info(
+                    "Limpiando suscripción anterior "
+                    "telegram_id=%s subscription_id=%s status=%s",
+                    telegram_id,
+                    user.paypal_subscription_id,
+                    existing_status,
+                )
+
                 clear_subscription_state(user)
                 db.commit()
                 db.refresh(user)
@@ -463,6 +514,13 @@ def create_subscription(
             # Si el ID ya no existe en PayPal, se limpia
             # para permitir crear una suscripción nueva.
             if paypal_resource_not_found(error):
+                logger.warning(
+                    "Suscripción anterior no encontrada en PayPal. "
+                    "Se limpiará telegram_id=%s subscription_id=%s",
+                    telegram_id,
+                    user.paypal_subscription_id,
+                )
+
                 clear_subscription_state(user)
                 db.commit()
                 db.refresh(user)
@@ -472,6 +530,12 @@ def create_subscription(
 
                 if error.response is not None:
                     paypal_response = error.response.text
+
+                logger.exception(
+                    "Error comprobando suscripción anterior "
+                    "telegram_id=%s",
+                    telegram_id,
+                )
 
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
@@ -488,6 +552,12 @@ def create_subscription(
         )
 
     except (RuntimeError, ValueError) as error:
+        logger.exception(
+            "Configuración inválida al crear suscripción "
+            "telegram_id=%s",
+            telegram_id,
+        )
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(error),
@@ -498,6 +568,12 @@ def create_subscription(
 
         if error.response is not None:
             paypal_response = error.response.text
+
+        logger.exception(
+            "PayPal rechazó la creación de la suscripción "
+            "telegram_id=%s",
+            telegram_id,
+        )
 
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -518,13 +594,21 @@ def create_subscription(
     db.commit()
     db.refresh(user)
 
+    # LOG: confirma que la suscripción se creó.
+    logger.info(
+        "Suscripción creada telegram_id=%s subscription_id=%s "
+        "paypal_status=%s",
+        telegram_id,
+        paypal_result["subscription_id"],
+        paypal_result["status"],
+    )
+
     return {
         "status": "created",
         "subscription_id": paypal_result["subscription_id"],
         "paypal_status": paypal_result["status"],
         "approval_url": paypal_result["approval_url"],
     }
-
 
 @app.post("/paypal/check-subscription/{telegram_id}")
 def check_paypal_subscription(
@@ -810,21 +894,33 @@ async def paypal_webhook(
         )
 
     event_type = event.get("event_type", "")
-    resource = event.get("resource", {})
+resource = event.get("resource", {})
 
-    subscription_id = resource.get("id")
+logger.info(
+    "Webhook recibido event_id=%s event_type=%s",
+    event.get("id"),
+    event_type,
+)
 
-    if event_type == "PAYMENT.SALE.COMPLETED":
-        subscription_id = resource.get(
-            "billing_agreement_id"
-        )
+subscription_id = resource.get("id")
 
-    if not subscription_id:
-        return {
-            "status": "ignored",
-            "reason": "El evento no contiene una suscripción.",
-        }
+if event_type == "PAYMENT.SALE.COMPLETED":
+    subscription_id = resource.get(
+        "billing_agreement_id"
+    )
 
+if not subscription_id:
+    logger.warning(
+        "Webhook ignorado event_id=%s event_type=%s: "
+        "no contiene subscription_id",
+        event.get("id"),
+        event_type,
+    )
+
+    return {
+        "status": "ignored",
+        "reason": "El evento no contiene una suscripción.",
+    }
     try:
         subscription = get_paypal_subscription(
             subscription_id
@@ -903,6 +999,15 @@ async def paypal_webhook(
 
     db.commit()
     db.refresh(user)
+    
+    logger.info(
+    "Webhook procesado event_id=%s event_type=%s "
+    "telegram_id=%s subscription_active=%s",
+    event.get("id"),
+    event_type,
+    telegram_id,
+    user.subscription_active,
+)
 
     return {
         "status": "processed",
