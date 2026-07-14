@@ -494,10 +494,12 @@ async def handle_button(
 
     if await user_is_spamming(query.from_user.id):
         await query.answer(
-            "⏳ Espera unos segundos antes de volver a intentarlo.",
+            "⏳ Espera 5 segundos antes de volver a intentarlo.",
             show_alert=True,
         )
         return
+
+    await query.answer()
 
     await query.answer()
 
