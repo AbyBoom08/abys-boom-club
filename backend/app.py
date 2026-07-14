@@ -1,5 +1,11 @@
 from datetime import datetime, timezone
+
+from collections import defaultdict, deque
 import os
+from threading import Lock
+from time import monotonic
+
+
 import requests
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from sqlalchemy import select, text
@@ -26,6 +32,44 @@ app = FastAPI(
 )
 
 Base.metadata.create_all(bind=engine)
+
+RATE_LIMIT_REQUESTS: dict[str, deque] = defaultdict(deque)
+RATE_LIMIT_LOCK = Lock()
+
+
+def enforce_rate_limit(
+    key: str,
+    max_requests: int,
+    window_seconds: int,
+) -> None:
+    """
+    Limita cuántas solicitudes puede realizar un usuario
+    durante un periodo determinado.
+    """
+
+    current_time = monotonic()
+    window_start = current_time - window_seconds
+
+    with RATE_LIMIT_LOCK:
+        request_times = RATE_LIMIT_REQUESTS[key]
+
+        while (
+            request_times
+            and request_times[0] <= window_start
+        ):
+            request_times.popleft()
+
+        if len(request_times) >= max_requests:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    "Has realizado demasiados intentos. "
+                    "Espera 10 minutos antes de volver "
+                    "a intentar crear una suscripción."
+                ),
+            )
+
+        request_times.append(current_time)
 
 
 def parse_paypal_datetime(
@@ -316,6 +360,11 @@ def create_subscription(
     Crea una suscripción para un usuario y evita que
     tenga varias suscripciones activas o pendientes.
     """
+    enforce_rate_limit(
+        key=f"create_subscription:{telegram_id}",
+        max_requests=3,
+        window_seconds=600,
+    )
 
     user = db.scalar(
         select(models.User).where(
