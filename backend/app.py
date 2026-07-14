@@ -1192,12 +1192,38 @@ async def paypal_webhook(
 
 @app.post("/subscriptions/process-expired")
 def process_expired_subscriptions(
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """
-    Busca suscripciones cuyo periodo pagado ya terminó,
-    las marca como inactivas y devuelve sus Telegram IDs.
+    Busca suscripciones vencidas y las marca como inactivas.
+
+    Este endpoint solo puede ser utilizado por el bot.
     """
+
+    expected_key = os.getenv("INTERNAL_API_KEY")
+    provided_key = request.headers.get("X-Internal-Key")
+
+    if not expected_key:
+        logger.error(
+            "INTERNAL_API_KEY no está configurada en el backend."
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="La seguridad interna no está configurada.",
+        )
+
+    if provided_key != expected_key:
+        logger.warning(
+            "Intento no autorizado de procesar "
+            "suscripciones vencidas."
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No autorizado.",
+        )
 
     now = datetime.now(timezone.utc)
 
@@ -1224,6 +1250,11 @@ def process_expired_subscriptions(
         expired_telegram_ids.append(user.telegram_id)
 
     db.commit()
+
+    logger.info(
+        "Suscripciones vencidas procesadas count=%s",
+        len(expired_telegram_ids),
+    )
 
     return {
         "status": "completed",
