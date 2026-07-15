@@ -26,7 +26,7 @@ from backend.paypal import (
 )
 from backend.schemas import UserCreate, UserResponse
 
-from main import (
+from bot.main import (
     process_telegram_webhook,
     start_telegram_application,
     stop_telegram_application,
