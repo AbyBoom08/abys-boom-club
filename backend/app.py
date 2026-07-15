@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from collections import defaultdict, deque
@@ -25,11 +26,48 @@ from backend.paypal import (
 )
 from backend.schemas import UserCreate, UserResponse
 
+from main import (
+    process_telegram_webhook,
+    start_telegram_application,
+    stop_telegram_application,
+)
+
+
+def get_telegram_webhook_url() -> str:
+    """Construye la URL pública que Telegram usará para enviar mensajes."""
+
+    explicit_url = os.getenv("TELEGRAM_WEBHOOK_URL")
+
+    if explicit_url:
+        return explicit_url.rstrip("/")
+
+    base_url = os.getenv("BACKEND_URL", "").rstrip("/")
+
+    if not base_url or base_url.startswith("http://127.0.0.1"):
+        raise RuntimeError(
+            "Configura TELEGRAM_WEBHOOK_URL o BACKEND_URL con la "
+            "dirección pública de Render."
+        )
+
+    return f"{base_url}/telegram/webhook"
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    webhook_url = get_telegram_webhook_url()
+    await start_telegram_application(webhook_url)
+
+    try:
+        yield
+    finally:
+        await stop_telegram_application()
+
 
 app = FastAPI(
     title="Abys Boom Club API",
     description="Backend oficial del sistema VIP",
-    version="1.0.0",
+    version="1.1.0",
+    lifespan=lifespan,
 )
 
 Base.metadata.create_all(bind=engine)
@@ -203,6 +241,23 @@ async def health():
     return {
         "server": "ok",
     }
+
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    """Recibe los mensajes y eventos enviados por Telegram."""
+
+    try:
+        payload = await request.json()
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Telegram envió un JSON inválido.",
+        ) from error
+
+    await process_telegram_webhook(payload)
+
+    return {"ok": True}
 
 
 @app.get("/database-test")
