@@ -30,6 +30,7 @@ from bot.main import (
     process_telegram_webhook,
     start_telegram_application,
     stop_telegram_application,
+    telegram_application,
 )
 
 
@@ -250,14 +251,64 @@ async def telegram_webhook(request: Request):
     try:
         payload = await request.json()
     except ValueError as error:
+        logger.warning("Telegram envió un JSON inválido.")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Telegram envió un JSON inválido.",
         ) from error
 
-    await process_telegram_webhook(payload)
+    update_id = payload.get("update_id")
+    logger.info(
+        "Actualización de Telegram recibida update_id=%s",
+        update_id,
+    )
 
-    return {"ok": True}
+    try:
+        await process_telegram_webhook(payload)
+    except Exception as error:
+        logger.exception(
+            "Error procesando actualización de Telegram update_id=%s",
+            update_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"No se pudo procesar la actualización de Telegram: {error}",
+        ) from error
+
+    return {
+        "ok": True,
+        "update_id": update_id,
+    }
+
+
+@app.get("/telegram/webhook-info")
+async def telegram_webhook_info():
+    """Muestra el estado actual del webhook registrado en Telegram."""
+
+    try:
+        info = await telegram_application.bot.get_webhook_info()
+    except Exception as error:
+        logger.exception(
+            "No se pudo consultar la información del webhook de Telegram."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"No se pudo consultar Telegram: {error}",
+        ) from error
+
+    return {
+        "url": info.url,
+        "has_custom_certificate": info.has_custom_certificate,
+        "pending_update_count": info.pending_update_count,
+        "last_error_date": (
+            info.last_error_date.isoformat()
+            if info.last_error_date
+            else None
+        ),
+        "last_error_message": info.last_error_message,
+        "max_connections": info.max_connections,
+        "allowed_updates": list(info.allowed_updates or []),
+    }
 
 
 @app.get("/database-test")
