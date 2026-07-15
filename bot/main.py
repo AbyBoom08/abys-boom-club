@@ -421,7 +421,14 @@ async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    chat = update.effective_chat
     user = update.effective_user
+
+
+
+    # El bot solo responde /start por mensaje privado.
+    if not chat or chat.type != "private":
+        return
 
     if not user or not update.message:
         return
@@ -445,19 +452,29 @@ async def start(
         return
 
     await update.message.reply_text(
-        f"Hola, {user.first_name} 👋\n\n"
-        "Bienvenido a Abys Boom Club.\n\n"
-        "Selecciona una de las siguientes opciones:\n\n"
-        f"Versión: {BOT_CODE_VERSION}",
-        reply_markup=main_menu(),
-    )
-
+    f"👋 ¡Hola, {user.first_name}!\n\n"
+    "🔥 Bienvenido a Abys Boom Club.\n\n"
+    "Para acceder a nuestro grupo VIP, sigue estos pasos:\n\n"
+    "💳 1. Pulsa «Comprar acceso» y completa tu suscripción mensual.\n\n"
+    "✅ 2. Una vez realizado el pago, pulsa «Solicitar acceso».\n\n"
+    "🚀 3. El bot verificará automáticamente tu suscripción y te permitirá ingresar al grupo VIP.\n\n"
+    "━━━━━━━━━━━━━━━━━━\n"
+    "🔒 Tu acceso permanecerá activo mientras tu suscripción esté vigente.\n\n"
+    "❌ Si decides cancelar tu membresía, puedes hacerlo desde este mismo bot en cualquier momento.\n\n"
+    "👇 Selecciona una opción para comenzar.",
+    reply_markup=main_menu(),
+)
 
 async def handle_normal_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    chat = update.effective_chat
     user = update.effective_user
+
+ # Ignora mensajes escritos dentro de grupos.
+    if not chat or chat.type != "private":
+        return
 
     if not user or not update.message:
         return
@@ -498,6 +515,15 @@ async def handle_button(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     query = update.callback_query
+    chat = update.effective_chat
+    
+    if not chat or chat.type != "private":
+        if query:
+            await query.answer(
+                "Usa estos botones desde el chat privado del bot.",
+                show_alert=True,
+            )
+        return
 
     if not query or not query.message:
         return
