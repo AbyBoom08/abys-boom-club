@@ -1,436 +1,3 @@
-import asyncio
-import logging
-import os
-from datetime import datetime, timezone
-
-import requests
-from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import BadRequest, Forbidden, TelegramError
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    ChatJoinRequestHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
-
-load_dotenv(override=True)
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
-
-BACKEND_URL = os.getenv(
-    "BACKEND_URL",
-    "http://127.0.0.1:8000",
-).rstrip("/")
-
-TELEGRAM_VIP_CHAT_ID_RAW = os.getenv("TELEGRAM_VIP_CHAT_ID")
-TELEGRAM_VIP_INVITE_LINK = os.getenv("TELEGRAM_VIP_INVITE_LINK")
-
-EXPIRED_CHECK_INTERVAL_SECONDS = int(
-    os.getenv("EXPIRED_CHECK_INTERVAL_SECONDS", "60")
-)
-
-try:
-    TELEGRAM_VIP_CHAT_ID = (
-        int(TELEGRAM_VIP_CHAT_ID_RAW)
-        if TELEGRAM_VIP_CHAT_ID_RAW
-        else None
-    )
-except ValueError as error:
-    raise RuntimeError(
-        "TELEGRAM_VIP_CHAT_ID debe ser un número entero."
-    ) from error
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-
-logger = logging.getLogger(__name__)
-
-USER_BUTTON_COOLDOWNS: dict[int, float] = {}
-BUTTON_COOLDOWN_SECONDS = 5
-BUTTON_COOLDOWN_LOCK = asyncio.Lock()
-
-async def user_is_spamming(
-    telegram_id: int,
-) -> bool:
-    """
-    Evita que un usuario presione botones muchas veces seguidas.
-    """
-
-    current_time = asyncio.get_running_loop().time()
-
-    async with BUTTON_COOLDOWN_LOCK:
-        last_click_time = USER_BUTTON_COOLDOWNS.get(
-            telegram_id
-        )
-
-        if (
-            last_click_time is not None
-            and current_time - last_click_time
-            < BUTTON_COOLDOWN_SECONDS
-        ):
-            return True
-
-        USER_BUTTON_COOLDOWNS[telegram_id] = current_time
-
-    return False
-
-def main_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "💳 Comprar acceso",
-                    callback_data="buy_access",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "✅ Solicitar acceso",
-                    callback_data="request_access",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "❌ Cancelar suscripción",
-                    callback_data="cancel_subscription",
-                )
-            ],
-        ]
-    )
-
-
-def buy_access_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "💳 Comprar acceso",
-                    callback_data="buy_access",
-                )
-            ]
-        ]
-    )
-
-
-def request_access_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "🔐 Solicitar acceso nuevamente",
-                    callback_data="request_access",
-                )
-            ]
-        ]
-    )
-
-
-def vip_join_keyboard() -> InlineKeyboardMarkup | None:
-    if not TELEGRAM_VIP_INVITE_LINK:
-        return None
-
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "🔐 Solicitar entrada al grupo VIP",
-                    url=TELEGRAM_VIP_INVITE_LINK,
-                )
-            ]
-        ]
-    )
-
-
-def cancellation_confirmation_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "✅ Sí, cancelar renovación",
-                    callback_data="confirm_cancel_subscription",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "↩️ No, conservar suscripción",
-                    callback_data="keep_subscription",
-                )
-            ],
-        ]
-    )
-
-
-def register_user(
-    telegram_id: int,
-    username: str | None,
-    first_name: str | None,
-) -> None:
-    response = requests.get(
-        f"{BACKEND_URL}/users/{telegram_id}",
-        timeout=10,
-    )
-
-    if response.status_code == 200:
-        return
-
-    if response.status_code != 404:
-        raise RuntimeError(
-            "El backend respondió con un código inesperado: "
-            f"{response.status_code}. Respuesta: {response.text}"
-        )
-
-    response = requests.post(
-        f"{BACKEND_URL}/users",
-        json={
-            "telegram_id": telegram_id,
-            "username": username,
-            "first_name": first_name,
-        },
-        timeout=10,
-    )
-
-    if response.status_code not in (201, 409):
-        raise RuntimeError(
-            "No se pudo registrar el usuario. "
-            f"Código: {response.status_code}. "
-            f"Respuesta: {response.text}"
-        )
-
-
-def get_user(telegram_id: int) -> dict | None:
-    response = requests.get(
-        f"{BACKEND_URL}/users/{telegram_id}",
-        timeout=10,
-    )
-
-    if response.status_code == 404:
-        return None
-
-    response.raise_for_status()
-    return response.json()
-
-
-def create_subscription(telegram_id: int) -> dict:
-    response = requests.post(
-        f"{BACKEND_URL}/paypal/subscriptions/{telegram_id}",
-        timeout=30,
-    )
-
-    if response.status_code != 200:
-        try:
-            detail = response.json().get(
-                "detail",
-                response.text,
-            )
-        except ValueError:
-            detail = response.text
-
-        raise RuntimeError(detail)
-
-    data = response.json()
-
-    if not data.get("approval_url"):
-        raise RuntimeError(
-            "El backend no devolvió el enlace de PayPal."
-        )
-
-    return data
-
-
-def check_user_subscription(telegram_id: int) -> dict:
-    response = requests.post(
-        f"{BACKEND_URL}/paypal/check-subscription/{telegram_id}",
-        timeout=30,
-    )
-
-    if response.status_code != 200:
-        try:
-            detail = response.json().get(
-                "detail",
-                response.text,
-            )
-        except ValueError:
-            detail = response.text
-
-        raise RuntimeError(detail)
-
-    return response.json()
-
-
-def cancel_user_subscription(telegram_id: int) -> dict:
-    """Solicita al backend cancelar futuros cobros."""
-
-    response = requests.post(
-        f"{BACKEND_URL}/paypal/cancel-subscription/{telegram_id}",
-        timeout=30,
-    )
-
-    if response.status_code != 200:
-        try:
-            detail = response.json().get(
-                "detail",
-                response.text,
-            )
-        except ValueError:
-            detail = response.text
-
-        raise RuntimeError(detail)
-
-    return response.json()
-
-
-
-def process_expired_subscriptions() -> dict:
-    """Pide al backend detectar y desactivar suscripciones vencidas."""
-
- if not INTERNAL_API_KEY:
-    raise RuntimeError(
-        "INTERNAL_API_KEY no está configurada en el bot."
-    )
-
-response = requests.post(
-    f"{BACKEND_URL}/subscriptions/process-expired",
-    headers={
-        "X-Internal-Key": INTERNAL_API_KEY,
-    },
-    timeout=30,
-)
-
-    if response.status_code != 200:
-        try:
-            detail = response.json().get(
-                "detail",
-                response.text,
-            )
-        except ValueError:
-            detail = response.text
-
-        raise RuntimeError(
-            "El backend no pudo procesar las suscripciones vencidas. "
-            f"Código: {response.status_code}. Respuesta: {detail}"
-        )
-
-    data = response.json()
-
-    if not isinstance(data.get("expired_users", []), list):
-        raise RuntimeError(
-            "El backend devolvió una lista de usuarios inválida."
-        )
-
-    return data
-
-
-
-def parse_paypal_datetime(value: str | None) -> datetime | None:
-    if not value:
-        return None
-
-    try:
-        parsed = datetime.fromisoformat(
-            value.replace("Z", "+00:00")
-        )
-
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-
-        return parsed
-
-    except ValueError:
-        return None
-
-
-def subscription_is_current(user_data: dict | None) -> bool:
-    if not user_data:
-        return False
-
-    if not user_data.get("subscription_active"):
-        return False
-
-    expiration = parse_paypal_datetime(
-        user_data.get("subscription_expires_at")
-    )
-
-    if expiration and expiration <= datetime.now(timezone.utc):
-        return False
-
-    return True
-
-
-def format_expiration_date(value: str | None) -> str | None:
-    expiration = parse_paypal_datetime(value)
-
-    if not expiration:
-        return None
-
-    months = {
-        1: "enero",
-        2: "febrero",
-        3: "marzo",
-        4: "abril",
-        5: "mayo",
-        6: "junio",
-        7: "julio",
-        8: "agosto",
-        9: "septiembre",
-        10: "octubre",
-        11: "noviembre",
-        12: "diciembre",
-    }
-
-    return (
-        f"{expiration.day} de "
-        f"{months[expiration.month]} de "
-        f"{expiration.year}"
-    )
-
-
-def active_membership_message(user_data: dict) -> str:
-    expiration_text = format_expiration_date(
-        user_data.get("subscription_expires_at")
-    )
-
-    if expiration_text:
-        validity_message = (
-            f"Tu membresía está vigente hasta el "
-            f"{expiration_text}."
-        )
-    else:
-        validity_message = (
-            "Tu membresía continúa vigente durante "
-            "el periodo mensual actual."
-        )
-
-    return (
-        "✅ Ya tienes una suscripción activa.\n\n"
-        f"{validity_message}\n\n"
-        "No necesitas volver a pagar.\n"
-        "Pulsa «Solicitar acceso nuevamente» para regresar "
-        "al grupo VIP."
-    )
-
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    user = update.effective_user
-
-    if not user or not update.message:
-        return
-
-    try:
-        await asyncio.to_thread(
-            register_user,
-            user.id,
-            user.username,
-            user.first_name,
         )
 
     except (requests.RequestException, RuntimeError) as error:
@@ -507,8 +74,6 @@ async def handle_button(
             show_alert=True,
         )
         return
-
-    await query.answer()
 
     await query.answer()
 
@@ -999,34 +564,42 @@ async def post_shutdown(
 
 
 
-def run_bot() -> None:
+
+def create_telegram_application(
+    include_lifecycle_hooks: bool = False,
+) -> Application:
+    """Construye la aplicación de Telegram y registra sus handlers."""
+
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError(
-            "No se encontró TELEGRAM_BOT_TOKEN en .env"
+            "No se encontró TELEGRAM_BOT_TOKEN en las variables de entorno."
         )
 
-    application = (
-        Application.builder()
-        .token(TELEGRAM_BOT_TOKEN)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
+    builder = Application.builder().token(TELEGRAM_BOT_TOKEN)
 
-    application.add_handler(
-        CommandHandler("start", start)
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(handle_button)
-    )
-
-    application.add_handler(
-        ChatJoinRequestHandler(
-            handle_join_request,
-            chat_id=TELEGRAM_VIP_CHAT_ID,
+    if include_lifecycle_hooks:
+        builder = (
+            builder
+            .post_init(post_init)
+            .post_shutdown(post_shutdown)
         )
-    )
+
+    application = builder.build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(handle_button))
+
+    if TELEGRAM_VIP_CHAT_ID is not None:
+        application.add_handler(
+            ChatJoinRequestHandler(
+                handle_join_request,
+                chat_id=TELEGRAM_VIP_CHAT_ID,
+            )
+        )
+    else:
+        application.add_handler(
+            ChatJoinRequestHandler(handle_join_request)
+        )
 
     application.add_handler(
         MessageHandler(
@@ -1034,7 +607,6 @@ def run_bot() -> None:
             handle_normal_message,
         )
     )
-
     application.add_handler(
         MessageHandler(
             filters.COMMAND,
@@ -1042,12 +614,65 @@ def run_bot() -> None:
         )
     )
 
-    print(f"Bot iniciado. Versión: {BOT_CODE_VERSION}")
+    return application
+
+
+# Una sola instancia compartida con FastAPI.
+telegram_application = create_telegram_application()
+
+
+async def start_telegram_application(webhook_url: str) -> None:
+    """Inicia el bot y registra en Telegram la URL del webhook."""
+
+    if telegram_application.running:
+        return
+
+    await telegram_application.initialize()
+    await telegram_application.start()
+    await post_init(telegram_application)
+
+    await telegram_application.bot.set_webhook(
+        url=webhook_url,
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=False,
+    )
+
+    logger.info("Webhook de Telegram configurado: %s", webhook_url)
+
+
+async def stop_telegram_application() -> None:
+    """Detiene limpiamente el bot cuando Render reinicia el servicio."""
+
+    if not telegram_application.running:
+        return
+
+    await post_shutdown(telegram_application)
+    await telegram_application.stop()
+    await telegram_application.shutdown()
+
+
+async def process_telegram_webhook(payload: dict) -> None:
+    """Convierte el JSON recibido en un Update y lo procesa."""
+
+    update = Update.de_json(
+        payload,
+        telegram_application.bot,
+    )
+    await telegram_application.process_update(update)
+
+
+def run_bot() -> None:
+    """Modo local opcional. En Render se utiliza el webhook de FastAPI."""
+
+    local_application = create_telegram_application(
+        include_lifecycle_hooks=True
+    )
+
+    print(f"Bot local iniciado. Versión: {BOT_CODE_VERSION}")
     print(f"Archivo ejecutado: {os.path.abspath(__file__)}")
     print(f"Backend usado: {BACKEND_URL}")
-    print("Presiona Ctrl+C para detenerlo.")
 
-    application.run_polling(
+    local_application.run_polling(
         allowed_updates=Update.ALL_TYPES
     )
 
